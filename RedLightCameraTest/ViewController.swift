@@ -139,26 +139,6 @@ class ViewController: UIViewController, CamDelegate {
     
     
     private func setupOutput() {
-//        let sampleBufferQueue = DispatchQueue(label: "SampleBufferQueue")
-//        videoDataOutput.setSampleBufferDelegate(self, queue: sampleBufferQueue)
-//        videoDataOutput.alwaysDiscardsLateVideoFrames = true
-//        videoDataOutput.videoSettings = [ String(kCVPixelBufferPixelFormatTypeKey) : kCVPixelFormatType_32BGRA]
-//        orientationClass.setRotationAndImageOrientation(ori: UIDevice.current.orientation)
-//
-//        if session.canAddOutput(videoDataOutput) {
-//            session.addOutput(videoDataOutput)
-//        } else {
-//            print("Output setup error")
-//        }
-//        
-//        guard let connection = videoDataOutput.connection(with: .video) else { return }
-//        connection.videoRotationAngle = orientationClass.ourVideoRotation
-//        let currentInput = self.session.inputs.first as? AVCaptureDeviceInput
-//        if currentInput?.device.position == .front {
-//          connection.isVideoMirrored = true
-//        } else {
-//          connection.isVideoMirrored = false
-//        }
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
         }
@@ -216,6 +196,44 @@ class ViewController: UIViewController, CamDelegate {
             self!.photoOutput.capturePhoto(with: photoSettings, delegate: self!)
            }
     }
+    
+    // Helper method to apply a red-scale filter to a UIImage.
+    private func applyRedScaleFilter(to image: UIImage) -> UIImage? {
+        guard let cgImage = image.cgImage else { return nil }
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        let bitsPerComponent = 8
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: bitsPerComponent, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo),
+              let data = context.data else { return nil }
+        
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        
+        // Process the pixel data to filter out green and blue values.
+        let pixelBuffer = data.bindMemory(to: UInt8.self, capacity: width * height * bytesPerPixel)
+        for y in 0..<height {
+            for x in 0..<width {
+                let pixelIndex = (y * bytesPerRow) + (x * bytesPerPixel)
+                let red = pixelBuffer[pixelIndex]     // Red channel
+                let alpha = pixelBuffer[pixelIndex + 3] // Alpha channel
+                pixelBuffer[pixelIndex] = red        // Keep only the red channel
+                pixelBuffer[pixelIndex + 1] = 0      // Set green channel to 0
+                pixelBuffer[pixelIndex + 2] = 0      // Set blue channel to 0
+                pixelBuffer[pixelIndex + 3] = alpha  // Preserve alpha channel
+            }
+        }
+        
+        // Create a new CGImage from the modified pixel data.
+        if let redScaledCGImage = context.makeImage() {
+            return UIImage(cgImage: redScaledCGImage)
+        }
+        
+        return nil
+    }
 
 }
 // take photo with vol down button?
@@ -228,29 +246,44 @@ extension ViewController: AVCapturePhotoCaptureDelegate {
             print("Error capturing photo: \(error)")
             return
         }
-//        guard let imageData = photo.fileDataRepresentation() else { return }
-//        let image = UIImage(data: imageData)
+        guard let imageData = photo.fileDataRepresentation() else { return }
+        let image = UIImage(data: imageData)
+        if toggler.isOn, let redScaledImage = applyRedScaleFilter(to: image!),
+           let redScaledImageData = redScaledImage.jpegData(compressionQuality: 1.0) {
+            Task {
+               await save(photo:redScaledImageData)
+
+            }
+        } else if !toggler.isOn {
+            Task {
+                let imageData = image?.jpegData(compressionQuality: 1.0)
+               await save(photo:imageData)
+
+            }
+        }
+        else {
+            print("Failed to apply red-scale filter to the photo.")
+        }
 //        let currentDateTime = Date()
 //        let formatter = DateFormatter()
 //        formatter.dateFormat = "yyMMddHHmmss"
 //        let timeStr = formatter.string(from: currentDateTime)
 //        // print("Time string: \(timeStr)")
-        Task {
-           await save(photo: photo)
-        }
+
         print("Photo captured!")
     }
     
-    func save(photo: AVCapturePhoto) async {
+    
+    func save(photo: Data?) async {
         // Confirm the user granted read/write access.
         guard await isPhotoLibraryReadWriteAccessGranted else { return }
         
         // Create a data representation of the photo and its attachments.
-        if let photoData = photo.fileDataRepresentation() {
+        if let photo {
             PHPhotoLibrary.shared().performChanges {
                 // Save the photo data.
                 let creationRequest = PHAssetCreationRequest.forAsset()
-                creationRequest.addResource(with: .photo, data: photoData, options: nil)
+                creationRequest.addResource(with: .photo, data: photo, options: nil)
             } completionHandler: { success, error in
                 if let error {
                     print("Error saving photo: \(error.localizedDescription)")
